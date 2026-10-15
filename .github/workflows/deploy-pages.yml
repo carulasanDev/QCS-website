@@ -1,0 +1,98 @@
+name: Deploy website to GitHub Pages
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Prepare static site
+        run: |
+          mkdir -p "$RUNNER_TEMP/qcs-site"
+          rsync -a \
+            --exclude='*.php' \
+            --exclude='.git/' \
+            --exclude='.github/' \
+            --exclude='.gitignore' \
+            --exclude='.env*' \
+            --exclude='*.log' \
+            ./ "$RUNNER_TEMP/qcs-site/"
+
+          python3 - "$RUNNER_TEMP/qcs-site" <<'PY'
+          from pathlib import Path
+          import sys
+
+          site = Path(sys.argv[1])
+          preview_notice = """<script>
+          document.addEventListener('submit', function (event) {
+            var form = event.target;
+            if (!(form instanceof HTMLFormElement) || form.dataset.staticPreview !== 'true') {
+              return;
+            }
+
+            event.preventDefault();
+            var notice = form.querySelector('[data-static-notice]');
+            if (!notice) {
+              notice = document.createElement('p');
+              notice.className = 'form-status form-status-error';
+              notice.setAttribute('role', 'status');
+              notice.dataset.staticNotice = 'true';
+              form.prepend(notice);
+            }
+            notice.textContent = 'Contact form delivery requires the PHP-hosted website. This public preview cannot send messages.';
+          });
+          </script>"""
+
+          for page in site.rglob('*.html'):
+              content = page.read_text(encoding='utf-8')
+              content = content.replace('href="contact.php"', 'href="contact.html"')
+              content = content.replace("href='contact.php'", "href='contact.html'")
+              content = content.replace(
+                  'action="mail.php"',
+                  'action="#" data-static-preview="true"',
+              )
+              content = content.replace(
+                  "action='mail.php'",
+                  "action='#' data-static-preview='true'",
+              )
+              if 'data-static-preview="true"' in content or "data-static-preview='true'" in content:
+                  content = content.replace('</body>', preview_notice + '\n</body>')
+              page.write_text(content, encoding='utf-8')
+
+          (site / '.nojekyll').touch()
+          PY
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: ${{ runner.temp }}/qcs-site
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
